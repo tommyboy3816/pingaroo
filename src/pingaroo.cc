@@ -16,6 +16,7 @@
 #include <linux/if_ether.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <signal.h>
 
 #include "pingit.h"
 
@@ -23,6 +24,14 @@ using namespace std;
 
 std::string g_devname;
 std::string g_destip;
+
+volatile bool g_kill_switch = false;
+
+void signal_sigint_handler( int signal ) {
+	g_kill_switch = true;
+	printf("caught signal %u\n", signal);
+
+}
 
 
 bool get_cmd_line_options( int argc, char **argv )
@@ -72,12 +81,8 @@ bool get_cmd_line_options( int argc, char **argv )
 
 int main( int argc, char **argv ) {
 	pingit *ne01;
-	std::string hostname;
 	bool retval_b = false;
-	FILE *fp;
-	char path[1035];
-	char tmp[80];
-	std::string cmd;
+	uint64_t ctr = 0;
 
 
 	retval_b = get_cmd_line_options( argc, argv );
@@ -86,55 +91,26 @@ int main( int argc, char **argv ) {
 		return (-1);
 	}
 
+	signal( SIGINT, signal_sigint_handler );
 
-	printf("device %s, dest IP %s\n", g_devname.c_str(), g_destip.c_str());
+	ne01 = new pingit( g_devname, g_destip );
 
-	snprintf(tmp, 80, "/usr/bin/arping -I %s -c 4 %s",
-			g_devname.c_str(), g_destip.c_str());
-
-	cmd = tmp;
-
-	printf("command = %s\n", cmd.c_str());
-
-	/* Open the command for reading. */
-	fp = popen(cmd.c_str(), "r");
-	if (fp == NULL) {
-		printf("Failed to run command\n" );
-		exit(1);
-	}
-
-	/* Read the output a line at a time - output it. */
-	while (fgets(path, sizeof(path)-1, fp) != NULL) {
-		printf("%s", path);
-	}
-
-	/* close */
-	pclose(fp);
-
-  return 0;
-
-
-
-	printf("argc %d, argv %s\n", argc, argv[argc-1]);
-
-	if( argc == 2 ) {
-		hostname = argv[argc-1];
-	}
-	else {
-		hostname = "192.168.1.100";
-	}
-
-	ne01 = new pingit( hostname );
-
-	if( -1 == ne01->init(true) ) {
-		return (-1);
-	}
-
+	ne01->init( true, NULL );
 	ne01->start();
+
+	while( g_kill_switch == false )
+	{
+		usleep(100);
+		ctr++;
+	}
+
+	printf("stopping...%lu, g_kill_switch %u\n", ctr, g_kill_switch);
+
+	ne01->stop();
 
 	cout << ne01->get_mac_addr_str() << "\n\n";
 
 	delete ne01;
 
-	return 0;
+	return (0);
 }

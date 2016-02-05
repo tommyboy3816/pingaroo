@@ -23,6 +23,7 @@
 #include <sys/ioctl.h>
 #include <net/if_arp.h>
 #include <sys/time.h>
+#include <pthread.h>
 
 #include "pingit.h"
 
@@ -46,30 +47,12 @@ std::string mac_ntoa( char *p )
 }
 
 
-pingit::pingit( uint32_t ip_addr )
-{
-	// TODO Auto-generated constructor stub
-
-	m_dest_ip = new struct in_addr();
-	m_dest_ip->s_addr = ip_addr;
-
-	printf("%s:%d: %s: ip_addr %s (0x%08x)\n",
-			DBGHDR, inet_ntoa(*m_dest_ip), ip_addr);
-
-	m_icmp_hdr = new struct icmphdr();
-	memset(m_icmp_hdr, 0, sizeof(struct icmphdr));
-
-	m_periodic = false;
-	m_sock = -1;
-	m_icmp_seq_num = 1;
-}
-
-
-pingit::pingit( std::string ip_addr )
+pingit::pingit( std::string dev, std::string ip_addr )
 {
 	int retval = -1;
 
 
+	m_dev = dev;
 	m_dest_ip = new struct in_addr();
 
 	retval = inet_aton( ip_addr.c_str(), m_dest_ip );
@@ -77,162 +60,190 @@ pingit::pingit( std::string ip_addr )
 		fprintf(stderr, "FAILED inet_ntoa: %s(%d)\n", strerror(errno), errno);
 	}
 
-	fprintf(stderr, "%s:%d: %s: new with %s (0x%08x)\n",
-			DBGHDR, ip_addr.c_str(), ntohl(m_dest_ip->s_addr));
+	fprintf(stderr, "%s:%d: %s: new with device %s, IP %s (0x%08x)\n",
+			DBGHDR, m_dev.c_str(), ip_addr.c_str(), ntohl(m_dest_ip->s_addr));
 
-	m_icmp_hdr = new struct icmphdr();
-	memset(m_icmp_hdr, 0, sizeof(struct icmphdr));
-
+	m_initialized = false;
 	m_periodic = false;
-	m_sock = -1;
+	m_exit_request = false;
+
 	m_icmp_seq_num = 1;
 }
 
 pingit::~pingit() {
 	// TODO Auto-generated destructor stub
 
-	close(m_sock);
-
 	delete m_dest_ip;
-	delete m_icmp_hdr;
+
+	pthread_mutex_destroy( &m_retry_tmr_lock );
+	pthread_mutex_destroy( &m_exit_lock );
 }
 
-int pingit::init( bool periodic )
+bool pingit::init( bool periodic, struct timeval *retry )
 {
-	//unsigned char data[2048];
-	//int rc;
-	int retval = 0;
+	bool retval = false;
+	struct timeval tmp;
+
+
+	if( pthread_mutex_init( &m_retry_tmr_lock, NULL ) != 0 )
+	{
+		printf("\n mutex init failed\n");
+		return (false);
+	}
+
+	if( pthread_mutex_init( &m_exit_lock, NULL ) != 0 )
+	{
+		printf("\nm_exit_lock failed\n");
+		return (false);
+	}
 
 	clear_arp_table();
 
 	m_periodic = periodic;
 
-	m_sock = socket( AF_INET, SOCK_DGRAM, IPPROTO_ICMP );
-	if( m_sock < 0 ) {
-		fprintf(stderr, "%s:%d: %s: FAILED to open socket (%d): %s(%d)\n",
-				DBGHDR, m_sock, strerror(errno), errno);
-		return (m_sock);
+	if( periodic == true ) {
+		if( retry == NULL ) {
+		/** use default time */
+		tmp.tv_sec = RETRY_TMR_SEC;
+		tmp.tv_usec = RETRY_TMR_USEC;
+		}
+		else {
+			tmp.tv_sec = retry->tv_sec;
+			tmp.tv_usec = retry->tv_usec;
+		}
+		set_retry( &tmp );
+	}
+	else {
+		timerclear( &m_retry_tmr );
 	}
 
-	fprintf(stderr, "%s:%d: %s: opened socket %d\n",
-			DBGHDR, m_sock);
+	printf("%s:%d: %s: retries %s, every %ld.%03ld seconds\n",
+			DBGHDR, (periodic)?"true":"false",
+			m_retry_tmr.tv_sec, m_retry_tmr.tv_usec);
 
 	memset( &m_addr, 0, sizeof(struct sockaddr_in) );
 	m_addr.sin_family = AF_INET;
 	m_addr.sin_addr = *m_dest_ip;
 
-	memset( m_icmp_hdr, 0, sizeof(struct icmphdr) );
-	m_icmp_hdr->type = ICMP_ECHO;
-	m_icmp_hdr->un.echo.id = 1234;//arbitrary id
+	m_initialized = true;
 
 	return (retval);
+}
+
+
+/**
+ * @fn bool pingit::set_retry( struct timeval *new_retry )
+ * @brief
+ *
+ * Make sure this is thread safe, timer could be changed on the fly
+ */
+bool pingit::set_retry( struct timeval *new_retry )
+{
+	pthread_mutex_lock( &m_retry_tmr_lock);
+
+	m_retry_tmr.tv_sec = new_retry->tv_sec;
+	m_retry_tmr.tv_usec = new_retry->tv_usec;
+
+	pthread_mutex_unlock( &m_retry_tmr_lock);
+}
+
+
+void pingit::get_retry( struct timeval *tmr )
+{
+	pthread_mutex_lock( &m_retry_tmr_lock);
+
+	tmr->tv_sec = m_retry_tmr.tv_sec;
+	tmr->tv_usec = m_retry_tmr.tv_usec;
+
+	pthread_mutex_unlock( &m_retry_tmr_lock);
 }
 
 
 int pingit::start()
 {
 	int retval = -1;
+	uint32_t ii = 0;
+	fd_set rfds;
+	struct timeval sleep;
 
 
-	fprintf(stderr, "%s:%d: %s: pinging...\n", DBGHDR);
+	/* Watch stdin (fd 0) to see when it has input. */
+	FD_ZERO(&rfds);
+	FD_SET(0, &rfds);
 
-	retval = send_ping();
-
-	get_mac_addr( inet_ntoa(*m_dest_ip) );
-
-	return (retval);
-}
+	get_retry( &sleep );
 
 
-int pingit::stop()
-{
-	int retval = -1;
-
-
-	return (retval);
-
-}
-
-
-int pingit::send_ping( void )
-{
-	int retval = -1;
-	std::string payload("hello");
-	struct timeval timeout = {3, 0}; //wait max 3 seconds for a reply
-	struct sockaddr_in src_addr;
-	fd_set read_set;
-	socklen_t slen;
-	struct icmphdr rcv_hdr;
-	struct timeval sent_time, recv_time, delta_time;
-
-	m_icmp_hdr->un.echo.sequence = m_icmp_seq_num++;
-
-	memset( &sent_time, 0, sizeof(struct timeval) );
-	memset( &recv_time, 0, sizeof(struct timeval) );
-
-	memcpy( m_raw_data, m_icmp_hdr, sizeof(struct icmphdr) );
-	memcpy( m_raw_data + sizeof( struct icmphdr ), payload.c_str(), payload.length()); //icmp payload
-	retval = sendto( m_sock, m_raw_data, sizeof(struct icmphdr) + payload.length(), 0,
-			(struct sockaddr*)&m_addr, sizeof(struct sockaddr_in));
-	if (retval <= 0) {
-		fprintf(stderr, "%s:%d: %s: FAILED sendto to %s: %s(%d)\n",
-				DBGHDR, inet_ntoa(*m_dest_ip), strerror(errno), errno);
-		return (retval);
-	}
-
-	gettimeofday( &sent_time, NULL );
-
-	fprintf(stderr, "Sent ICMP to %s\n", inet_ntoa(*m_dest_ip));
-
-	for( int ii = 0; ii < 3; ii++ )
+	while( !m_exit_request )
 	{
-		memset(&read_set, 0, sizeof read_set);
-		FD_SET(m_sock, &read_set);
-
-		//wait for a reply with a timeout
-		retval = select(m_sock + 1, &read_set, NULL, NULL, &timeout);
-		if( retval == 0 ) {
-			fprintf(stderr, "TIMEDOUT waiting response from %s\n", inet_ntoa(*m_dest_ip));
-			continue;
-		} else if( retval < 0 ) {
-			fprintf(stderr, "%s:%d: %s: FAILED select(%d): %s:%d\n",
-				DBGHDR, retval, strerror(errno), errno);
-			break;
+		retval = select( 1, &rfds, NULL, NULL, &sleep );
+		if( retval == -1 ) {
+			perror ("select");
+			return (1);
 		}
-
-		//we don't care about the sender address in this example..
-		slen = sizeof(struct sockaddr);
-
-		retval = recvfrom( m_sock, m_raw_data, sizeof(m_raw_data), 0,
-				(struct sockaddr *)&src_addr, &slen );
-		if( retval <= 0 ) {
-			fprintf(stderr, "%s:%d: %s: FAILED recvfrom(%d): %s:%d\n",
-				DBGHDR, retval, strerror(errno), errno);
-			break;
-		}
-		else if( retval < (int)sizeof(rcv_hdr) ) {
-			fprintf(stderr, "%s:%d: %s: short ICMP pkt(%d bytes): %s:%d\n",
-				DBGHDR, retval, strerror(errno), errno);
-			break;
-		}
-
-		gettimeofday( &recv_time, NULL );
-		timersub( &recv_time, &sent_time, &delta_time );
-
-		memcpy( &rcv_hdr, m_raw_data, sizeof(rcv_hdr) );
-
-		if( rcv_hdr.type == ICMP_ECHOREPLY ) {
-			fprintf(stderr, "ICMP Reply (%d), src %s, id=0x%x, sequence =  0x%x (%ld.%06ld sec)\n",
-					rcv_hdr.type, inet_ntoa(src_addr.sin_addr),
-					rcv_hdr.un.echo.id, rcv_hdr.un.echo.sequence,
-					delta_time.tv_sec, delta_time.tv_usec);
+		else if (m_exit_request) {
+			fprintf(stderr, "%s:%d: %s: EXITING...\n", DBGHDR);
 			break;
 		}
 		else {
-			fprintf(stderr, "%s:%d: %s: Got ICMP packet with type 0x%x ?!?\n",
-					DBGHDR, rcv_hdr.type);
+			printf("%d...m_exit_request %d\n", ii++, m_exit_request);
+			retval = send_ping();
+			get_mac_addr( inet_ntoa(*m_dest_ip) );
 		}
+
+		/** Check to see if the timer changed */
+		get_retry( &sleep );
 	}
+
+
+	printf("%s:%d: %s: m_exit_request %u\n", DBGHDR, m_exit_request);
+
+	return (retval);
+}
+
+
+void pingit::stop()
+{
+	pthread_mutex_lock( &m_exit_lock);
+
+	m_exit_request = true;
+	printf("%s:%d: %s: m_exit_request %u\n", DBGHDR, m_exit_request);
+
+	pthread_mutex_unlock( &m_exit_lock);
+}
+
+
+bool pingit::send_ping( void )
+{
+	bool retval = false;
+	static char tmp[256];
+	std::string cmd;
+	FILE *fp = NULL;
+
+
+	memset( tmp, 256, 0 );
+
+	snprintf(tmp, 256, "/usr/bin/arping -f -w 5 -I %s -c 4 %s",
+			m_dev.c_str(), inet_ntoa(*m_dest_ip));
+
+	cmd = tmp;
+
+	printf("command = %s\n", cmd.c_str());
+
+	/* Open the command for reading. */
+	fp = popen(cmd.c_str(), "r");
+	if (fp == NULL) {
+		printf("Failed to run command\n" );
+		exit(1);
+	}
+
+	/* Read the output a line at a time - output it. */
+	while (fgets(tmp, sizeof(tmp)-1, fp) != NULL) {
+		printf("%s", tmp);
+	}
+
+	/* close */
+	pclose(fp);
 
 	return (retval);
 }
