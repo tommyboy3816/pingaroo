@@ -26,3 +26,5 @@ git merge master
 
 git push origin master
 git push origin <branch_name>
+
+changed but not updated

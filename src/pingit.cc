@@ -29,6 +29,24 @@
 
 
 /**
+ * command = /usr/bin/arping -f -w 5 -I eth0 -c 4 10.8.129.254
+ * ----------------------------------
+ * WARNING: interface is ignored: Operation not permitted
+ *   0: ARPING 10.8.129.254 from 10.8.128.65 eth0
+ *   1: Sent 4 probes (4 broadcast(s))
+ *   2: Received 0 response(s)
+ * ----------------------------------
+ *
+ * ----------------------------------
+ * WARNING: interface is ignored: Operation not permitted
+ *   0: ARPING 10.8.129.53 from 10.8.128.65 eth0
+ *   1: Unicast reply from 10.8.129.53 [88:51:FB:56:CE:6B]  0.870ms
+ *   2: Sent 1 probes (1 broadcast(s))
+ *   3: Received 1 response(s)
+ * ----------------------------------
+ *
+ */
+/**
  *
  */
 std::string mac_ntoa( char *p )
@@ -219,7 +237,7 @@ bool pingit::send_ping( void )
 	static char tmp[256];
 	std::string cmd;
 	FILE *fp = NULL;
-
+	uint32_t ii = 0;
 
 	memset( tmp, 256, 0 );
 
@@ -229,6 +247,7 @@ bool pingit::send_ping( void )
 	cmd = tmp;
 
 	printf("command = %s\n", cmd.c_str());
+	printf("----------------------------------\n");
 
 	/* Open the command for reading. */
 	fp = popen(cmd.c_str(), "r");
@@ -239,8 +258,11 @@ bool pingit::send_ping( void )
 
 	/* Read the output a line at a time - output it. */
 	while (fgets(tmp, sizeof(tmp)-1, fp) != NULL) {
-		printf("%s", tmp);
+		printf("%3d: %s", ii, tmp);
+		ii++;
 	}
+
+	printf("----------------------------------\n");
 
 	/* close */
 	pclose(fp);
@@ -287,7 +309,8 @@ int pingit::get_mac_addr( std::string host_str )
 		return (-1);
 	} /* Socket is opened.*/
 
-	strcpy(req.arp_dev, "wlan0");
+	//strcpy(req.arp_dev, "wlan0");
+	strcpy(req.arp_dev, m_dev.c_str());
 
 	if( ioctl(tmp_socket, SIOCGARP, (caddr_t)&req) < 0 ) {
 		if( errno == ENXIO ) {
