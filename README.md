@@ -29,3 +29,6 @@ git push origin create_pingaroo_arping
 
 changed but not updated
 git commit --all
+git remote add origin https://github.com/tommyboy3816/pingaroo.git
+git remote set-url origin https://LBB@github.com/tommyboy3816/pingaroo.git
+
