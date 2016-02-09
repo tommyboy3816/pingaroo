@@ -25,10 +25,10 @@ git merge create_hello_world_cc
 git merge master
 
 git push origin master
-git push origin create_pingaroo_arping
 
 changed but not updated
 git commit --all
 git remote add origin https://github.com/tommyboy3816/pingaroo.git
-git remote set-url origin https://LBB@github.com/tommyboy3816/pingaroo.git
+git remote set-url origin https://tommyboy3816@github.com/tommyboy3816/pingaroo.git
+git push origin create_pingaroo_arping
 
