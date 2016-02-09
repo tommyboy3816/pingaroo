@@ -25,6 +25,7 @@ git merge create_hello_world_cc
 git merge master
 
 git push origin master
-git push origin <branch_name>
+git push origin create_pingaroo_arping
 
 changed but not updated
+git commit --all
